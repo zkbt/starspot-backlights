@@ -1,76 +1,145 @@
 '''
-Tool to model the TLSE.
+Cartoon tool to model the TLSE.
 '''
 
+from .imports import *
 
+import emcee, corner
+from tqdm import tqdm
+
+# this is needed to read PHOENIX model spectra
 from rainbowconnection.sources.phoenix import *
 
-import emcee
-from tqdm import tqdm
-import corner
-import astropy.units as u
+# some numerical constants (avoiding astropy just for speed)
+sigma_sb = 5.670367e-05 # ergs/s/cm**2/K**4
+h = 6.6260755e-27	 # erg s
+c = 2.99792458e10    # cm/s
+Rearth = 6378100.0 # m
+Rsun = 695700000.0 # m
 
+# what is the maximum allowed covering fraction f
+maxf = 0.5
+
+# are we enforcing that spots must be dark?
+darkspots = False
+
+# some plotting defaults
 linekw = dict(alpha=0.5)
 labels = 'T_phot', 'T_spot', 'f', 'deltaf', 'rp/rs'
 
-sigma_sb = 5.6703669999999995e-05
-h = 6.6260755e-27	 # erg s
-c = 2.99792458e10    # cm/s
-maxf = 0.5
-
-darkspots = False
-def guesstimate_deltaf(f, f1):
+def guesstimate_deltaf(f, f1=0.001):
     '''
     Make a Poisson-based estimate of the spot coverage.
 
-    (Trying to remember) Is f1 the spot covering fraction of one spot?
-    '''
-    assert(np.all(f >= 0))
-    return np.minimum(np.sqrt(f*f1), np.sqrt((1-f)*f1))
+    Parameters
+    ----------
+    f : float
+        The average spot-covering fraction on the star.
+    f1 : float
+        The average spot-covering fraction of a single spot.
 
-def estimate_A(ratio, f, deltaf=None, f1=0.001):
+    Returns
+    -------
+    deltaf : float
+        The estimate of deltaf, from assuming f1*sqrt(N)
     '''
-    Given a starspot brightness ratio and total spot covering fraction,
-    (and maybe a deltaf), estimate the amplitude of photometric variations.
+
+    # make sure f is positive
+    assert(np.all(f >= 0))
+
+    # make sure it's symmetrical about 0.5 (this is a kludge!)
+    deltaf = np.minimum(np.sqrt(f*f1), np.sqrt((1-f)*f1))
+
+    return deltaf
+
+def estimate_A(ratio, f, deltaf):
     '''
-    if deltaf is None:
-        deltaf = guesstimate_deltaf(f, f1)
-    return np.abs(deltaf*(1-ratio)/(1 - f*(1-ratio)))
+    Given a starspot brightness ratio, total spot covering fraction,
+    and deltaf, estimate the amplitude of photometric variations.
+
+    Parameters
+    ----------
+    ratio : float, np.array
+        (spotted spectrum)/(unspotted spectrum)
+    f : float
+        The average spot-covering fraction on the star.
+    deltaf : float
+        The time-variable part of the spot-covering fraction.
+    '''
+
+    amplitude = np.abs(deltaf*(1-ratio)/(1 - f*(1-ratio)))
+    return amplitude
 
 def estimate_eps(ratio, f):
     '''
     Estimate the transit depth multiplicative factor,
-    given some spot ratio and covering fraction.
+    given some spot ratio and covering fraction, and
+    assuming that f_tra (the spot-covering fraction along
+    the transit chord) is 0.
+
+    Parameters
+    ----------
+    ratio : float, np.array
+        (spotted spectrum)/(unspotted spectrum)
+    f : float
+        The average spot-covering fraction on the star.
+
+    Returns
+    -------
+    epsilon:
+        The factor by which a transit depth is amplified.
+        The observed transit depth will be epsilon*(Rp/R*)**2
     '''
-    return 1/(1-f*(1-ratio))
+    epsilon = 1/(1-f*(1-ratio))
+    return epsilon
 
 def solve_for_f(ratio=0.5, A=0.01, f1=0.001, visualize=False):
     '''
-    A toy numerical solution for s, given some ratio and amplitude
-    and a strong belief on the Poisson deltaf.
+    A toy numerical solution for the total spot-covering fraction,
+    given some ratio and amplitude, as well as and a strong belief
+    on spot size for the Poisson-based deltaf.
     '''
-    f = np.linspace(0, 1, 1000)
-    A_hypothesis = estimate_A(ratio, f, f1=f1)
 
+    # create a grid of f values
+    f = np.linspace(0, maxf, 1000)
+
+    # create a grid of Poisson estimates for deltaf
+    deltaf = guesstimate_deltaf(f, f1)
+
+    # create a grid of amplitudes from those estimates
+    A_hypothesis = estimate_A(ratio, f, deltaf)
+
+    # find the best value of f
     best = np.argmin(np.abs(A_hypothesis - A))
 
+    # make a plot showing this numerical solution
     if visualize:
         plt.plot(f, A_hypothesis)
         plt.scatter(f[best], A_hypothesis[best], color='black', zorder=10)
-
         plt.axhline(A)
-
+        plt.axvline(f[best])
         plt.xlabel('$f$ (total spot covering fraction)')
         plt.ylabel('A = $\Delta I/I$')
+        plt.title(f'ratio={ratio}, A={A}, f1={f1} | f={f[best]:.2f}')
 
     return f[best]
 
 class Backlight:
     def __init__(self, data, max_temperature_offset=0.3, stellar_radius=1, planet_radius=1, f1=0.001, logg=5.0, include_poisson=True):
         '''
-        data : pandas data frame full of measurements
-        stellar_radius : (solar radii)
-        planet_radius : (Earth radii)
+        Parameters
+        ----------
+
+        data : pandas DataFrame
+            Measurements of the system.
+            'oot' for amplitude of out-of-transit
+            'depth' for transit depths
+            'teff' for effective temperature of star
+        stellar_radius : float
+            Radius of star in solar radii
+        planet_radius : float
+            Radius of planet in Earth radii
+
         '''
         self.data = data
         self.max_temperature_offset = max_temperature_offset
@@ -192,7 +261,7 @@ class Backlight:
         return prob
 
     def rprs_actual(self):
-        return (self.planet_radius*u.Rearth/self.stellar_radius/u.Rsun).decompose().value
+        return (self.planet_radius*Rearth)/(self.stellar_radius*Rsun)
 
     def sample(self, nburn = 500, nsteps = 1000, nwalk = 30, remake=False):
         '''
@@ -433,7 +502,7 @@ class Backlight:
         plt.tight_layout()
 
     def plot_transmission(self):
-        planet_depth = ((self.planet_radius*u.Rearth)/(self.stellar_radius*u.Rsun)).decompose().value**2
+        planet_depth = ((self.planet_radius*Rearth)/(self.stellar_radius*Rsun))**2
 
         for T_phot, T_spot, f, deltaf, rprs in self.subset:
 

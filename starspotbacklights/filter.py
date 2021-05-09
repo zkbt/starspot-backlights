@@ -1,6 +1,4 @@
-import numpy as np, matplotlib.pyplot as plt
-from scipy.interpolate import interp1d
-import pandas as pd
+from .imports import *
 
 class Filter:
     """
@@ -32,6 +30,11 @@ class Filter:
         """
         When the filter is called, return the response (= what
         fraction of photons are recorded at a particular wavelength?
+
+        Parameters
+        ----------
+        w : np.array
+            Wavelength, in nm
         """
         response = np.zeros_like(w)
         inside = np.abs(w - self.center) < self.width
@@ -42,6 +45,17 @@ class Filter:
         """
         Integrate this filter against a spectrum,
         and divide by the area of the filter response.
+
+        Parameters
+        ----------
+        w : np.array
+            Wavelength, in nm
+
+        f : np.array
+            Flux, any units
+
+        visualize : bool
+            Should we make a plot showing this intergration happening?
         """
         if visualize:
             plt.plot(w, f)
@@ -53,7 +67,10 @@ class Filter:
 
         return np.trapz(f * self(w), w) / np.trapz(self(w), w)
 
-    def calculate_cw(self):
+    def calculate_center_and_width(self):
+        '''
+        Calculate th ecenter and effective width of the filter.
+        '''
         w = np.arange(300, 2500)
         self.center = np.trapz(w * self(w), w) / np.trapz(
             self(w), w
@@ -65,7 +82,14 @@ class Filter:
 
 
 class MEarth(Filter):
+    '''
+    Define the MEarth filter bandpass.
+    '''
     def __init__(self):
+        '''
+        Load the MEarth filter from a text file and set
+        up an interpolation function using it.
+        '''
         angstrom, response = np.loadtxt("mearth-filter.txt").T
         self.model = interp1d(
             angstrom / 10,
@@ -75,7 +99,16 @@ class MEarth(Filter):
             fill_value=0.0,
         )
         self.name = "MEarth"
-        self.calculate_cw()
+        self.calculate_center_and_width()
 
     def __call__(self, w):
+        """
+        When the filter is called, return the response (= what
+        fraction of photons are recorded at a particular wavelength?
+
+        Parameters
+        ----------
+        w : np.array
+            Wavelength, in nm
+        """
         return self.model(w)

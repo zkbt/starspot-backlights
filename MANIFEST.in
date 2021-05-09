@@ -1,0 +1,2 @@
+# include data files inside the package directory structure
+recursive-include starspot-backlights *.txt *.csv *.dat
