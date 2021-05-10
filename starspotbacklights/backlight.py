@@ -541,12 +541,12 @@ class Backlight:
         self.cmap = plt.cm.coolwarm_r
 
 
-    def plot_amplitudes(self):
+    def plot_amplitudes(self, factor=1.1, **kw):
         '''
         Plot the (measured and) model wavelength-dependent variability amplitudes.
         '''
 
-        self.setup_colors()
+        self.setup_colors(factor=factor)
 
         # plot the data
         if 'oot' in self.data:
@@ -567,12 +567,12 @@ class Backlight:
             plt.plot(self.w_unspot, A, color=self.cmap(self.norm(thisdye)), **linekw)
 
 
-    def plot_depth(self):
+    def plot_depth(self, factor=1.1, **kw):
         '''
         Plot the (measured and) model transit depths.
         '''
 
-        self.setup_colors()
+        self.setup_colors(factor=factor)
 
         # plot the data
         if 'depth' in self.data:
@@ -596,8 +596,9 @@ class Backlight:
 
     def plot_dyed_samples(self, encompassing_gs_panel,
                                 horizontal = ['deltaf'],
-                                vertical = ['rprs', 'T_unspot', 'ratio',  'f', 'f1'],
-                                max_samples=10000):
+                                vertical = [ 'ratio',  'N', 'f', 'rprs'],#'T_unspot',
+                                max_samples=1000,
+                                factor=1.1, **kw):
         '''
         Plot the samples along some useful projections.
 
@@ -612,18 +613,20 @@ class Backlight:
             The names of the parameters to plot on the x-axis
         '''
 
-        self.setup_colors()
+        self.setup_colors(factor=factor)
 
         labels=dict(deltaf='$\Delta f(t)$',
                     rprs='$R_p/R_s$',
                     T_unspot='$T_{unspot}$',
                     ratio='$T_{spot}/T_{unspot}$',
                     f='$f$',
-                    f1='$f_{1}$')
+                    f1='$f_{1}$',
+                    N='$N = f/f_{1}$')
 
         # define the parameter clouds
         T_unspot, T_spot, f, deltaf, f1, rprs = self.samples['parameters'].T
         ratio = T_spot/T_unspot
+        N = f/f1
 
         # sort the samples randomly (to avoid visual biases)
         s = np.argsort(np.random.random(len(T_spot)))
@@ -666,6 +669,29 @@ class Backlight:
                 if j == 0:
                     plt.ylabel(labels[k])
 
+                N_to_plot = [1, 10, 100]
+                if (k == 'N'):
+                    for N in N_to_plot:
+                        plt.axhline(N, linestyle='--', color='black', **linekw)
+
+                if (k == 'ratio'):
+                    plt.axhline(1, linestyle='--', color='black', **linekw)
+
+                if (k == 'T_unspot'):
+                    if 'teff' in self.data:
+                        teff_data = self.data['teff']
+                        plt.axhline(teff_data['teff'][0], color='black', **linekw)
+                        for direction in [-1, 1]:
+                            plt.axhline(teff_data['teff'][0]+direction*teff_data['teff-error'][0], linestyle='--', color='black', **linekw)
+
+
+                if (k == 'f') and (l == 'deltaf'):
+                    for this_N in N_to_plot:
+                        this_f = np.linspace(0, 0.5)
+                        this_f1 = this_f/this_N
+                        this_deltaf = np.sqrt(this_f1*this_f)
+                        plt.plot(this_deltaf, this_f, linestyle='--', color='black', **linekw)
+
                 # adjust limits
                 if k == 'ratio':
                     if self.max_temperature_offset is not None:
@@ -677,7 +703,7 @@ class Backlight:
                 if l == 'f':
                     plt.xlim(0, 0.5)
 
-    def plot_everything(self, factor=1.2, seed=42):
+    def plot_everything(self, factor=1.1, seed=42, **kw):
         #to_plot = ['f',  'rprs', 'T_unspot', 'ratio',  'deltaf']
 
         self.setup_colors(factor=factor)
@@ -690,14 +716,14 @@ class Backlight:
 
 
         gs = plt.matplotlib.gridspec.GridSpec(2, 2,
-                                              width_ratios=[2, 1],
-                                              wspace=0.35,
+                                              width_ratios=[1.5, 1],
+                                              wspace=0.4,
                                               bottom=0.1, top=0.95)
 
 
         # plot the oot amplitude, with the oot data
         self.ax_amp = plt.subplot(gs[0,0])
-        self.plot_amplitudes()
+        self.plot_amplitudes(**kw)
         plt.setp(self.ax_amp.get_xticklabels(), visible=False)
         plt.xlabel(' ')
         if 'oot' in self.data:
@@ -708,11 +734,11 @@ class Backlight:
 
 
         self.ax_depth = plt.subplot(gs[1,0], sharex=self.ax_amp)
-        self.plot_depth()
+        self.plot_depth(**kw)
         D = self.rprs_actual()**2*100
         plt.ylim(D*0.9, D*1.1)
 
-        self.plot_dyed_samples(gs[:,1])
+        self.plot_dyed_samples(gs[:,1], **kw)
 
     def plot_both(self):
 
