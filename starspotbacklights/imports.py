@@ -7,5 +7,6 @@ import astropy.units as u, astropy.constants as con
 
 
 from scipy.interpolate import interp1d
+from scipy.special import loggamma, gamma
 
 data_directory = pkg_resources.resource_filename("rainbowconnection", "data")
