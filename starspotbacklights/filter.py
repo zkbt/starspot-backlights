@@ -90,7 +90,7 @@ class MEarth(Filter):
         Load the MEarth filter from a text file and set
         up an interpolation function using it.
         '''
-        angstrom, response = np.loadtxt("mearth-filter.txt").T
+        angstrom, response = np.loadtxt(os.path.join(data_directory, "mearth-filter.txt")).T
         self.model = interp1d(
             angstrom / 10,
             response,

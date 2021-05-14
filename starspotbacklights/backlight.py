@@ -26,11 +26,12 @@ maxf = 0.5
 darkspots = False
 
 # some plotting defaults
-linekw = dict(alpha=1)
-markerkw = dict(alpha=1, s=1)
+alpha=1
+linekw = dict(alpha=alpha)
+markerkw = dict(alpha=alpha, s=1)
+textkw = dict(alpha=alpha)
 
 #labels = 'T_unspot', 'T_spot', 'f', 'deltaf', 'rp/rs'
-parameter_names = 'T_unspot', 'T_spot', 'f', 'deltaf', 'f1', 'rprs'
 
 def guesstimate_deltaf(f, f1=0.001):
     '''
@@ -136,13 +137,14 @@ class Backlight:
 
     '''
     def __init__(self, data={},
-                       max_temperature_offset=0.3,
+                       max_temperature_offset=0.25,
                        stellar_radius=1,
                        planet_radius=1,
                        logg=5.0,
                        include_poisson=True,
                        R=100,
-                       extend_wavelengths=True):
+                       extend_wavelengths=True,
+                       label=None):
         '''
         Parameters
         ----------
@@ -168,6 +170,8 @@ class Backlight:
             The resolution at which spectra should be loaded/plotted
         extend_wavelengths : bool
             Should we extend the wavelengths of the PHOENIX spectra?
+        offset_kludge : bool
+            A kludge! For one set of depths with uncertain absolute level!
         '''
 
         # the data used to constrain the backlight
@@ -193,6 +197,14 @@ class Backlight:
         self.previous_T_spot = None
         self.previous_T_unspot = None
 
+        self.offset_kludge = 'relative-depth' in self.data
+        if self.offset_kludge:
+            self.parameter_names = ('T_unspot', 'T_spot', 'f', 'deltaf', 'f1', 'rprs', 'relative_depth_offset')
+        else:
+            self.parameter_names = ('T_unspot', 'T_spot', 'f', 'deltaf', 'f1', 'rprs')
+
+        self.label = label
+
     def set_data(self, data):
         '''
         Connect a set of data to the model.
@@ -207,12 +219,21 @@ class Backlight:
         '''
         self.data = data
 
+        # add some useful columns
+        for k in self.data:
+            try:
+                self.data[k]['center'] = [f.center for f in self.data[k]['filter']]
+                self.data[k]['width'] = [f.width for f in self.data[k]['filter']]
+            except KeyError:
+                pass
     def filelabel(self):
         '''
         Give a label to files associated with this backlight model.
         '''
         f = 'backlight-model-'
         f += '-'.join([f'{len(self.data[k])}{k}' for k in self.data])
+        if self.label is not None:
+            f += '-' + self.label
         return f
 
 
@@ -220,7 +241,10 @@ class Backlight:
         '''
         Set the active parameter values for this backlight.
         '''
-        self.T_unspot, self.T_spot, self.f, self.deltaf, self.f1, self.rprs = parameters
+        if self.offset_kludge:
+            self.T_unspot, self.T_spot, self.f, self.deltaf, self.f1, self.rprs, self.relative_depth_offset = parameters
+        else:
+            self.T_unspot, self.T_spot, self.f, self.deltaf, self.f1, self.rprs = parameters
         self.parameters = parameters
 
         # set the spectra associated with the spotted and unspotted photospheres
@@ -270,6 +294,9 @@ class Backlight:
         if (self.f1 < 0) | (self.f1 > self.deltaf):
             return -np.inf
 
+        if self.offset_kludge:
+            if (self.relative_depth_offset < 0.5) |  (self.relative_depth_offset > 2):
+                return -np.inf
         # impose a temperature prior if we know one
         if self.max_temperature_offset is not None:
             T_eff = (self.f*self.T_spot**4 + (1-self.f)*self.T_unspot**4)**0.25
@@ -279,6 +306,11 @@ class Backlight:
 
         # start with a prior of 0
         lnprior = 0.0
+
+        # add logarithmic prior on f, deltaf, f1
+        lnprior -= np.log(self.f)
+        lnprior -= np.log(self.deltaf)
+        lnprior -= np.log(self.f1)
 
         # add a prior on deltaf given f
         if self.include_poisson:
@@ -364,7 +396,46 @@ class Backlight:
             depth_chisq = np.sum((depth_data['depth'] - model_depths)**2/depth_data['depth-error']**2)
             lnlike += -0.5*depth_chisq
 
+        if self.offset_kludge:
+            # use the transit depths as data points
+            relative_depth_data = self.data['relative-depth']
+            ratios = np.array([f.integrate(self.w_spot, self.f_spot)/f.integrate(self.w_unspot, self.f_unspot) for f in relative_depth_data['filter']])
+            eps = calculate_eps(ratios, self.f)
+            raw_depth = self.rprs**2
+            relative_model_depths = raw_depth*eps
+
+            relative_depth_chisq = np.sum((relative_depth_data['depth']*self.relative_depth_offset - relative_model_depths)**2/relative_depth_data['depth-error']**2)
+            lnlike += -0.5*relative_depth_chisq
+
         return lnlike
+
+    def print_chisq_summary(self):
+
+        for p, k in zip([self.parameters_maxlikely, self.parameters_maxprob], ['most likely', 'most probable']):
+
+            print()
+            print(f'With the {k} parameters...')
+            lnl = self.lnlike(p)
+            print(f' ln(likelihood) = {lnl:.2f}')
+
+            # careful to change this if you change the likelihood
+            chisq = -2*lnl
+
+            dof = 0
+            for k in self.data:
+                N = len(self.data[k])
+                print(f'  +{N} d.o.f. from {k}')
+                dof += N
+
+            for k in self.parameter_names:
+                dof -= 1
+                print(f'  -{1} d.o.f. from {k}')
+
+            print(f' chisq = {chisq:.2f} for {dof} degrees of freedom')
+            print(f' reduced chisq = {chisq/dof:.2f}')
+            print()
+
+        return chisq, dof
 
     def lnprob(self, parameters):
         f'''
@@ -392,14 +463,13 @@ class Backlight:
             lnlike = 0
         return lnprior + lnlike, lnprior, lnlike
 
-
     def rprs_actual(self):
         '''
         FIXME, do we still need this?
         '''
         return (self.planet_radius*Rearth)/(self.stellar_radius*Rsun)
 
-    def sample(self, nburn=5000, nsteps=5000, nwalk=30, remake=False):
+    def sample(self, nburn=5000, nsteps=5000, nwalk=100, remake=False):
         '''
         Run an MCMC to sample from the probability distribution
         for TLSE parameters.
@@ -428,7 +498,7 @@ class Backlight:
             print('generating MCMC samples; this may take a moment')
 
             # set the initial parameters
-            ndim = len(parameter_names)
+            ndim = len(self.parameter_names)
             if 'teff' in self.data:
                 teff = self.data['teff']['teff'][0]
                 if self.max_temperature_offset is None:
@@ -448,27 +518,35 @@ class Backlight:
             initial_f1 = np.random.uniform(0, initial_deltaf, nwalk)
             initial_rprs = np.random.uniform( self.rprs_actual()*0.9,  self.rprs_actual()*1.1, nwalk)
 
-            p0 = np.transpose([initial_T_unspot,
-                               initial_T_spot,
-                               initial_f,
-                               initial_deltaf,
-                               initial_f1,
-                               initial_rprs])
-
+            if self.offset_kludge:
+                initial_relative_depth_offset = np.random.uniform(0.9, 1.1, nwalk)
+                p0 = np.transpose([initial_T_unspot,
+                                   initial_T_spot,
+                                   initial_f,
+                                   initial_deltaf,
+                                   initial_f1,
+                                   initial_rprs,
+                                   initial_relative_depth_offset])
+            else:
+                p0 = np.transpose([initial_T_unspot,
+                                   initial_T_spot,
+                                   initial_f,
+                                   initial_deltaf,
+                                   initial_f1,
+                                   initial_rprs])
             # set up some emcee blobs to hang onto lnlike, lnprior, lnposterior
             #dtype = [("lnprior", float), ("lnlike", float)]
 
             # create the sampler and run it
-            self.sampler = emcee.EnsembleSampler(nwalk, ndim, self.lnprob)#, blobs_dtype=dtype)
-            for i in self.sampler.sample(p0, iterations=nburn + nsteps, progress=True):
-                pass
+            self.sampler = emcee.EnsembleSampler(nwalk, ndim, self.lnprob)
+            self.sampler.run_mcmc(p0, nburn + nsteps, progress=True)
 
 
             blobs = self.sampler.get_blobs()
 
             self.samples = {}
-            self.samples['lnprior'] = blobs[nburn:,:,0].reshape(nwalk * nsteps)
-            self.samples['lnlike'] =  blobs[nburn:,:,1].reshape(nwalk * nsteps)
+            self.samples['lnprior'] = blobs.transpose(1, 0, 2)[:, nburn:,0].reshape(nwalk * nsteps)
+            self.samples['lnlike'] =  blobs.transpose(1, 0, 2)[:, nburn:,1].reshape(nwalk * nsteps)
             self.samples['parameters'] = self.sampler.chain[:, nburn:, :].reshape(nwalk * nsteps, ndim)
 
 
@@ -476,12 +554,18 @@ class Backlight:
             print(f'saved samples to {filename}')
 
 
+        best = np.argmax(self.samples['lnprior'] + self.samples['lnlike'])
+        self.parameters_maxprob = self.samples['parameters'][best, :]
+        #for i, x in enumerate(self.parameters_maxprob):
+        #    print(self.parameter_names[i], '=', x)
+        #print(f"very best ln(prob) = {(self.samples['lnprior'] + self.samples['lnlike'])[best]}")
 
-        self.parameters_maxprob = self.samples['parameters'][np.argmax(self.samples['lnprior'] + self.samples['lnlike']), :]
-        for i, x in enumerate(self.parameters_maxprob):
-            print(parameter_names[i], '=', x)
+        best = np.argmax( self.samples['lnlike'])
+        self.parameters_maxlikely = self.samples['parameters'][best, :]
+        #print(f"very best ln(like) = {( self.samples['lnlike'])[best]}")
 
         self.print_parameter_summary()
+        self.print_chisq_summary()
 
         self.define_subset()
 
@@ -490,13 +574,13 @@ class Backlight:
         Print a summary of the parameters from the samples.
         '''
         def confidence_interval(x):
-            one_sigma = 0.682689
-            lower, middle, upper = np.percentile(x, [(1 - one_sigma)/2, 0.5, 1-(1 - one_sigma)/2], )
+            one_sigma = 0.682689*100
+            lower, middle, upper = np.percentile(x, [(100 - one_sigma)/2, 50, 100-(100 - one_sigma)/2], )
             ms, ls, us = f'{middle:.5}', f'{lower-middle:+.5}', f'{upper-middle:+.5}'
             return '{'+ms+'}'+'{'+ls+'}'+'{'+us+'}'
 
         print()
-        for i, k in enumerate(parameter_names):
+        for i, k in enumerate(self.parameter_names):
             print(f"{k} = {confidence_interval(self.samples['parameters'][:,i])}")
 
         for k in ['lnprior', 'lnlike']:
@@ -507,7 +591,7 @@ class Backlight:
         Simple wrapper to make a corner plot of the samples.
         '''
         # Plot the corner plot
-        fig = corner.corner(self.samples['parameters'], labels=parameter_names);
+        fig = corner.corner(self.samples['parameters'], labels=self.parameter_names);
 
     def define_subset(self, N=10, seed=42):
         '''
@@ -529,16 +613,20 @@ class Backlight:
             An array of a whole bunch of parameters.
         '''
 
-        T_unspot, T_spot, f, deltaf, f1, rprs = parameters
+        if self.offset_kludge:
+            T_unspot, T_spot, f, deltaf, f1, rprs, relative_depth_offset = parameters
+        else:
+            T_unspot, T_spot, f, deltaf, f1, rprs = parameters
         return np.log(T_spot/T_unspot)
 
     def setup_colors(self, factor=1.1):
         '''
         Set the shared color scale for all plots
         '''
-        self.vmin, self.vmax = -np.log(factor),  np.log(factor)
-        self.norm = plt.Normalize(self.vmin, self.vmax)
-        self.cmap = plt.cm.coolwarm_r
+        if hasattr(self, 'vmin') == False:
+            self.vmin, self.vmax = -np.log(factor),  np.log(factor)
+            self.norm = plt.Normalize(self.vmin, self.vmax)
+            self.cmap = plt.cm.coolwarm_r
 
 
     def plot_amplitudes(self, factor=1.1, **kw):
@@ -551,12 +639,14 @@ class Backlight:
         # plot the data
         if 'oot' in self.data:
             data = self.data['oot']
-            plt.errorbar(data['center'], 100*data['amplitude'], 100*data['amplitude-error'],
+            plt.errorbar(data['center'], 100*data['amplitude'],
+                         yerr=100*data['amplitude-error'], xerr=data['width'],
                          marker='.', markersize=10,  zorder=10, color='black',
-                         linewidth=0, elinewidth=2)
+                         linewidth=0, elinewidth=2, label='oot')
+            self.legend_amplitude = plt.legend(frameon=False, loc='lower left')
         plt.xlabel('Wavelength (nm)')
-        plt.ylabel('Semiamplitude of\nPhotometric Modulations (%)')
-        plt.xlim(400, 2500)
+        plt.ylabel('Semi-amplitude of Photometric\nRotational Modulations (%)')
+        plt.xlim(400, 2000)
 
         # plot a subsample of parameters
         for parameters in self.subset:
@@ -579,10 +669,17 @@ class Backlight:
             data = self.data['depth']
             plt.errorbar(data['center'], 100*data['depth'], 100*data['depth-error'],
                          marker='.', markersize=10,  zorder=10, color='black',
-                         linewidth=0, elinewidth=2)
+                         linewidth=0, elinewidth=2, label='depth') # KLUDGE, will need
         plt.xlabel('Wavelength (nm)')
 
+        if self.offset_kludge:
+            data = self.data['relative-depth']
+            relative_depth_offset = self.parameters_maxprob[-1]
+            plt.errorbar(data['center'], 100*data['depth']*relative_depth_offset, 100*data['depth-error']*relative_depth_offset,
+                         marker='.', markersize=10,  zorder=10, color='dimgray',
+                         linewidth=0, elinewidth=2, label='relative-depth')
         # plot a subsample of parameters
+        self.legend_depth = plt.legend(frameon=False, loc='upper right')
 
         for parameters in self.subset:
 
@@ -592,13 +689,13 @@ class Backlight:
             thisdye = self.dye(parameters)
 
             plt.plot(self.w_unspot, depth, color=self.cmap(self.norm(thisdye)), **linekw)
-        plt.ylabel('Absolute Spot-Affected\nTransit Depths (%)')
+        plt.ylabel('Absolute Spot-Affected\nTransit Depth (%)')
 
     def plot_dyed_samples(self, encompassing_gs_panel,
                                 horizontal = ['deltaf'],
-                                vertical = [ 'ratio',  'N', 'f', 'rprs'],#'T_unspot',
+                                vertical = [ 'ratio', 'N', 'f', 'rprs'],#'T_unspot',
                                 max_samples=1000,
-                                factor=1.1, **kw):
+                                factor=1.25, **kw):
         '''
         Plot the samples along some useful projections.
 
@@ -624,7 +721,11 @@ class Backlight:
                     N='$N = f/f_{1}$')
 
         # define the parameter clouds
-        T_unspot, T_spot, f, deltaf, f1, rprs = self.samples['parameters'].T
+        if self.offset_kludge:
+            T_unspot, T_spot, f, deltaf, f1, rprs, relative_depth_offset = self.samples['parameters'].T
+
+        else:
+            T_unspot, T_spot, f, deltaf, f1, rprs = self.samples['parameters'].T
         ratio = T_spot/T_unspot
         N = f/f1
 
@@ -670,19 +771,50 @@ class Backlight:
                     plt.ylabel(labels[k])
 
                 N_to_plot = [1, 10, 100]
+
+                textkw = dict(fontsize=6, alpha=alpha, clip_on=False)
+                notekw = dict( va='center', ha='left', **textkw)
+
                 if (k == 'N'):
-                    for N in N_to_plot:
-                        plt.axhline(N, linestyle='--', color='black', **linekw)
+                    for this_N in N_to_plot:
+                        plt.axhline(this_N, linestyle='--', color='black', **linekw)
+                        bla = f' N={this_N} spot'
+                        if this_N > 1:
+                            bla+= 's'
+                        plt.text(0.5, this_N, bla, **notekw)
+                    plt.yscale('log')
+                    plt.ylim(.5, 200)
+                    plt.yticks([1, 10, 100])
 
                 if (k == 'ratio'):
                     plt.axhline(1, linestyle='--', color='black', **linekw)
+                    plt.text(0.5, 1, ' no spot\n contrast', **notekw)
 
                 if (k == 'T_unspot'):
                     if 'teff' in self.data:
                         teff_data = self.data['teff']
-                        plt.axhline(teff_data['teff'][0], color='black', **linekw)
+                        this_teff, this_teff_sigma = teff_data['teff'][0], teff_data['teff-error'][0]
+                        plt.axhline(this_teff, color='black', **linekw)
+                        plt.text(0.5, this_teff, ' T$_{eff}$', **notekw)
+
                         for direction in [-1, 1]:
-                            plt.axhline(teff_data['teff'][0]+direction*teff_data['teff-error'][0], linestyle='--', color='black', **linekw)
+                            plt.axhline(this_teff+direction*this_teff_sigma, linestyle='--', color='black', **linekw)
+                        buffer = 3*np.std(T_unspot)
+                        plt.ylim(this_teff - buffer, this_teff + buffer)
+
+                if (k == 'rprs'):
+                    if 'depth' in self.data:
+                        raw_rprs = np.sqrt(self.data['depth']['depth'])
+                        raw_sigma = self.data['depth']['depth-error']/(2*raw_rprs)
+                        mean_rprs = np.sum(raw_rprs/raw_sigma**2)/np.sum(1/raw_sigma**2)
+                        mean_sigma = 1/np.sqrt(np.sum(1/raw_sigma**2))
+                        plt.axhline(mean_rprs, linestyle='--', color='black', **linekw)
+                        #for sign in [-1, 1]:
+                        #    plt.axhline(mean_rprs + sign*mean_sigma, linestyle='--', color='black', **linekw)
+                        buffer = 3*np.std(rprs)
+                        plt.ylim(mean_rprs - buffer, mean_rprs + buffer)
+
+                        plt.text(0.5, mean_rprs, ' transit\n depth', **notekw)
 
 
                 if (k == 'f') and (l == 'deltaf'):
@@ -691,34 +823,42 @@ class Backlight:
                         this_f1 = this_f/this_N
                         this_deltaf = np.sqrt(this_f1*this_f)
                         plt.plot(this_deltaf, this_f, linestyle='--', color='black', **linekw)
+                        bla = f' {this_N} spot'
+
+                        plt.text(np.sqrt(0.5*0.5/this_N), 0.5, f'N={this_N}',  va='bottom', ha='center', **textkw)
+                        plt.yticks([0.01, 0.1])
+
 
                 # adjust limits
-                if k == 'ratio':
+                if (k == 'ratio'):
                     if self.max_temperature_offset is not None:
                         plt.ylim(1-self.max_temperature_offset, 1+self.max_temperature_offset)
                 if k == 'f':
-                    plt.ylim(0, 0.5)
+                    plt.ylim(0.002, 0.5)
+                    plt.yscale('log')
                 if l == 'deltaf':
-                    plt.xlim(0, 0.1)
+                    plt.xlim(0.002, 0.5)
+                    plt.xscale('log')
                 if l == 'f':
-                    plt.xlim(0, 0.5)
+                    plt.xlim(0.002, 0.5)
+                    plt.xscale('log')
 
-    def plot_everything(self, factor=1.1, seed=42, **kw):
+    def plot_everything(self, N_lines=20, factor=1.25, seed=42, **kw):
         #to_plot = ['f',  'rprs', 'T_unspot', 'ratio',  'deltaf']
 
         self.setup_colors(factor=factor)
 
         # pull out a subset of samples
-        self.define_subset(10, seed=seed)
+        self.define_subset(N_lines, seed=seed)
 
         # create a figure
-        fi = plt.figure(figsize=(7, 5))
+        fi = plt.figure(figsize=(8, 5.5))
 
 
         gs = plt.matplotlib.gridspec.GridSpec(2, 2,
-                                              width_ratios=[1.5, 1],
-                                              wspace=0.4,
-                                              bottom=0.1, top=0.95)
+                                              width_ratios=[2, 1],
+                                              wspace=0.35,
+                                              bottom=0.15, top=0.95, right=0.9)
 
 
         # plot the oot amplitude, with the oot data
@@ -737,6 +877,8 @@ class Backlight:
         self.plot_depth(**kw)
         D = self.rprs_actual()**2*100
         plt.ylim(D*0.9, D*1.1)
+        plt.xlim(400, 1800)
+
 
         self.plot_dyed_samples(gs[:,1], **kw)
 
