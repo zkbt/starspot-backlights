@@ -1,0 +1,35 @@
+site_name: starspot-backlights
+site_url: https://zkbt.github.com/starspot-backlights
+nav:
+    #- Home: index.md
+    #- installation.ipynb
+    - model-stellar-spectra.ipynb
+    - api.md
+theme:
+  name: "material"
+  features:
+      - navigation.tracking
+repo_url: https://github.com/zkbt/starspot-backlights/
+plugins:
+  - search
+  - mkdocs-jupyter:
+      execute : True
+      include_source : True
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          selection:
+            docstring_style: "numpy"
+          rendering:
+            show_source: False
+      custom_templates: templates
+      watch:
+        - starspotbacklights
+  - exclude:
+      glob:
+        - "example-datasets/*"
+        - "*.pdf"
+
+# this is super borrowed from Christina Hedges' fabulous
+# https://christinahedges.github.io/astronomy_workflow/
