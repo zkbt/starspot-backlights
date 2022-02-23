@@ -8,7 +8,18 @@ class Filter:
 
     def __init__(self, center=452, width=20):
         """
-        Initialize with a center and a total width.
+        Initialize with a center and a width,
+        effectively creating a tophat filter
+        spanning `center +/- width`.
+
+        Parameters
+        ----------
+        center : float
+            Central wavelength (in nm).
+        width : float
+            Half width (in nm), meaning that
+            wavelengths within `width` of `center`,
+            whether higher or lower, will be included.
         """
         self.center = center
         self.width = width
@@ -35,6 +46,12 @@ class Filter:
         ----------
         w : np.array
             Wavelength, in nm
+
+        Returns
+        -------
+        response : np.array
+            The fractional response of the filter at
+            each wavelength.
         """
         response = np.zeros_like(w)
         inside = np.abs(w - self.center) < self.width
@@ -55,7 +72,7 @@ class Filter:
             Flux, any units
 
         visualize : bool
-            Should we make a plot showing this intergration happening?
+            Should an explanatory plot be made?
         """
         if visualize:
             plt.plot(w, f)
@@ -69,9 +86,15 @@ class Filter:
 
     def calculate_center_and_width(self):
         '''
-        Calculate th ecenter and effective width of the filter.
+        Calculate the center and effective width of the filter,
+        and store these as attributes of the filter object.
         '''
-        w = np.arange(300, 2500)
+
+        # FIX ME! make this more general!
+        try:
+            w = self.model.x
+        except AttributeError:
+            w = np.arange(300, 2500)
         self.center = np.trapz(w * self(w), w) / np.trapz(
             self(w), w
         )
@@ -79,7 +102,6 @@ class Filter:
             np.trapz((w - self.center) ** 2 * self(w), w)
             / np.trapz(self(w), w)
         )
-
 
 class MEarth(Filter):
     '''
@@ -90,9 +112,14 @@ class MEarth(Filter):
         Load the MEarth filter from a text file and set
         up an interpolation function using it.
         '''
-        angstrom, response = np.loadtxt(os.path.join(data_directory, "mearth-filter.txt")).T
+
+        # load the filter data
+        w_in_angstrom, response = np.loadtxt(os.path.join(data_directory, "mearth-filter.txt")).T
+        w_in_nm = w_in_angstrom/10
+
+        # set up the interpolation
         self.model = interp1d(
-            angstrom / 10,
+            w_in_nm,
             response,
             kind="linear",
             bounds_error=False,
