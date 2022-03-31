@@ -5,9 +5,7 @@ A suite of cartoon tools for modeling the effect of starspots on transiting exop
 For detailed usage, please read the documentation [here](???).
 
 ## Example Usage
-```
-(include example)
-```
+The best example of using this code might be the application to the Hubble/WFC3 transmission spectrum of GJ 1132b presented [here](https://github.com/zkbt/gj1132b-starspots-wfc3/blob/main/gj1132b-starspot-constraints-with-wfc3.ipynb).
 
 ## Installation
 You should be able to install this by running
